@@ -8,7 +8,6 @@ env:
 
 jobs:
   build:
-    # flip-toolchain 的 gcc 需要 GLIBC_2.36；ubuntu-22.04 只有 2.35。
     runs-on: ubuntu-24.04
     steps:
       - name: Host tools
@@ -23,38 +22,25 @@ jobs:
           tar xf tc.tar.gz
           echo "TOOLCHAIN_ROOT=$(pwd)/flip" >> $GITHUB_ENV
 
-      - name: Download mpv 0.34 source
+      - name: Download mpv 0.34 source + bootstrap waf
         run: |
           wget -q https://github.com/mpv-player/mpv/archive/refs/tags/v0.34.0.tar.gz -O mpv.tar.gz
           tar xf mpv.tar.gz
+          cd mpv-0.34.0
+          python3 ./bootstrap.py
+          ls -la waf
 
-      - name: Inspect sysroot dependencies
-        run: |
-          export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
-          SR=$(${TOOLCHAIN}-gcc -print-sysroot)
-          echo "TOOLCHAIN_SYSROOT=$SR" >> $GITHUB_ENV
-          echo "SYSROOT=$SR"
-          echo "=== ffmpeg / libass / lua .pc files ==="
-          find "$SR" -name '*.pc' 2>/dev/null | grep -iE 'libav|libass|lua|freetype|fribidi|harfbuzz' | sort
-          echo "=== ffmpeg headers (avcodec.h) ==="
-          find "$SR" -name 'avcodec.h' 2>/dev/null | head
-          echo "=== libav*.so ==="
-          find "$SR" -name 'libav*.so*' 2>/dev/null | head -20
-          echo "=== all .pc count ==="
-          find "$SR" -name '*.pc' 2>/dev/null | wc -l
-          echo "=== waf python test ==="
-          cd mpv-0.34.0 && python3 ./waf --version 2>&1 | head -5
-
-      - name: Configure mpv (WAF)
+      - name: Configure mpv (WAF) - dependency check
         continue-on-error: true
         run: |
           export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
-          export PKG_CONFIG_PATH="$SYSROOT/usr/lib/pkgconfig:$SYSROOT/usr/lib/x86_64-linux-gnu/pkgconfig"
-          export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
+          SR=$(${TOOLCHAIN}-gcc -print-sysroot)
+          export PKG_CONFIG_PATH="$SR/usr/lib/pkgconfig:$SR/usr/lib/x86_64-linux-gnu/pkgconfig"
+          export PKG_CONFIG_SYSROOT_DIR="$SR"
           export PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1
           export PKG_CONFIG_ALLOW_SYSTEM_LIBS=1
           cd mpv-0.34.0
-          ./configure \
+          python3 ./waf configure \
             --cc=${TOOLCHAIN}-gcc \
             --cxx=${TOOLCHAIN}-g++ \
             --host=$TOOLCHAIN \
@@ -66,15 +52,11 @@ jobs:
             --enable-plain-gl \
             --disable-cocoa --disable-win32 2>&1 | tee configure.log
           echo "CONFIGURE_EXIT=${PIPESTATUS[0]}"
-          echo "=== config.log tail ==="
-          tail -40 config.log 2>/dev/null || true
 
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mpv-build-logs
-          path: |
-            mpv-0.34.0/configure.log
-            mpv-0.34.0/config.log
+          path: mpv-0.34.0/configure.log
           if-no-files-found: ignore
