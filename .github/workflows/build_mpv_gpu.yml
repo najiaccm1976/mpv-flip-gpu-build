@@ -151,9 +151,36 @@ jobs:
             mpv-0.34.0/build.log
           if-no-files-found: ignore
 
+      - name: Package binary + needed system libs
+        if: success()
+        run: |
+          export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
+          SR=$(${TOOLCHAIN}-gcc -print-sysroot)
+          mkdir -p package/lib
+          cp mpv-gpu package/
+          # Include GPU/system libs that the device may not have in its lib path.
+          # These come from the toolchain sysroot (built for this exact device).
+          for lib in libEGL.so.1 libGLESv2.so.2 libgbm.so.1 libdrm.so.2 \
+                     libdrm.so.2.4.0 libjpeg.so.8 libjpeg.so.8.3.0; do
+            find "$SR/usr/lib" -name "$lib" 2>/dev/null | head -1 | while read f; do
+              cp -a "$f" package/lib/ 2>/dev/null || true
+            done
+          done
+          echo "=== package contents ==="
+          ls -la package package/lib
+          tar czf mpv-gpu-package.tar.gz -C package .
+          ls -la mpv-gpu-package.tar.gz
+
       - name: Upload binary
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: mpv-gpu-aarch64
           path: mpv-gpu
+
+      - name: Upload package
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpv-gpu-package
+          path: mpv-gpu-package.tar.gz
