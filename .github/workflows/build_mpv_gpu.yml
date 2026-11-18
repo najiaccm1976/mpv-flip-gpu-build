@@ -3,8 +3,6 @@ name: Build mpv 0.34 (waf) with EGL/DRM GPU for Miyoo Flip 2
 # Compiles mpv 0.34.0 with vo_gpu + EGL-DRM context (Mali G52 / libmali),
 # so RetroArch-format GLSL shaders (PhosphorLine) can be loaded.
 # Build system is WAF (mpv 0.34), NOT meson.
-# Runtime libs are reused from the stock firmware rootfs (libEGL/libGLESv2/
-# libgbm/libmali). Missing dev headers (EGL/GLES2/gbm/drm) are supplied here.
 
 on:
   workflow_dispatch:
@@ -21,7 +19,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git wget curl tar xz-utils python3 \
             pkg-config libtool autoconf automake
-          # waf needs python; ubuntu-22.04 has python3
+          python3 --version
 
       - name: Download Miyoo Flip cross toolchain (steward-fu, 436MB)
         run: |
@@ -29,7 +27,35 @@ jobs:
             https://github.com/steward-fu/website/releases/download/miyoo-flip/flip-toolchain-v1.0.tar.gz \
             -O tc.tar.gz
           tar xf tc.tar.gz
-          echo "TOOLCHAIN_ROOT=$(pwd)/flip" >> $GITHUB_ENV
+          TOOLCHAIN_ROOT=$(pwd)/flip
+          echo "TOOLCHAIN_ROOT=$TOOLCHAIN_ROOT" >> $GITHUB_ENV
+          echo "=== extracted top-level ==="
+          ls -la flip | head -30
+
+      # ---- CRITICAL PROBE: discover toolchain sysroot & available dev libs ----
+      - name: Probe toolchain sysroot
+        run: |
+          export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
+          CC=${TOOLCHAIN}-gcc
+          echo "=== compiler ==="
+          $CC --version | head -2
+          echo "=== -print-sysroot ==="
+          SR=$($CC -print-sysroot); echo "SYSROOT_DETECTED=$SR"
+          echo "=== sysroot root ==="
+          ls -la "$SR" 2>/dev/null | head -20
+          echo "=== include dirs (libav*/ass/lua/EGL/GLES/gbm/drm) ==="
+          find "$SR" -maxdepth 4 -type d \( -name 'libavcodec' -o -name 'libavformat' \
+            -o -name 'libavutil' -o -name 'ASS' -o -name 'lua*' -o -name 'EGL' \
+            -o -name 'GLES2' -o -name 'GBM' -o -name 'libdrm' \) 2>/dev/null | head -40
+          echo "=== ffmpeg/libav headers present? ==="
+          find "$SR" -name 'avcodec.h' 2>/dev/null | head -5
+          find "$SR" -name 'libass.h' -o -name 'ass.h' 2>/dev/null | head -5
+          echo "=== pkgconfig files ==="
+          find "$SR" -name '*.pc' 2>/dev/null | sed 's#.*/##' | sort | head -80
+          echo "=== EGL/GLES/gbm/mali runtime libs in toolchain ==="
+          find "$SR" -name 'libEGL*' -o -name 'libGLES*' -o -name 'libgbm*' \
+            -o -name 'libmali*' -o -name 'libdrm*' 2>/dev/null | head -40
+          echo "PROBE_DONE"
 
       - name: Download mpv 0.34 source
         run: |
@@ -43,50 +69,108 @@ jobs:
           cd fw
           git sparse-checkout set miyoo355_fw_20250527/unpack/rootfs/usr/lib
           echo "FW_LIB=$(pwd)/miyoo355_fw_20250527/unpack/rootfs/usr/lib" >> $GITHUB_ENV
+          echo "=== firmware GPU libs ==="
+          ls -la miyoo355_fw_20250527/unpack/rootfs/usr/lib/ | grep -iE 'EGL|GLES|gbm|mali|drm' | head -40
 
       - name: Prepare sysroot (headers + runtime libs + pkgconfig)
         run: |
+          export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
+          CC=${TOOLCHAIN}-gcc
           T=$(pwd); S="$T/sysroot"; mkdir -p "$S/usr/include" "$S/usr/lib/pkgconfig"
-          # Khronos headers
+          # Khronos EGL + KHR headers (EGL-Registry) -- VERIFIED paths
           git clone --depth 1 https://github.com/KhronosGroup/EGL-Registry.git /tmp/egl
           cp -r /tmp/egl/api/EGL "$S/usr/include/"
-          cp -r /tmp/egl/api/GLES2 "$S/usr/include/"
-          cp -r /tmp/egl/api/GLES3 "$S/usr/include/"
           cp /tmp/egl/api/KHR/khrplatform.h "$S/usr/include/"
-          wget -q https://raw.githubusercontent.com/mesa3d/mesa/main/include/GBM/gbm.h -O "$S/usr/include/gbm.h"
-          # libdrm headers (needed by --drm / --egl-drm)
+          # GLES2/GLES3 headers live in OpenGL-Registry (moved out of EGL-Registry)
+          git clone --depth 1 https://github.com/KhronosGroup/OpenGL-Registry.git /tmp/glreg
+          cp -r /tmp/glreg/api/GLES2 "$S/usr/include/"
+          cp -r /tmp/glreg/api/GLES3 "$S/usr/include/"
+          # gbm.h from mesa GitLab (self-contained, verified) -- GitHub mirror is gone
+          wget -q 'https://gitlab.freedesktop.org/mesa/mesa/-/raw/main/src/gbm/main/gbm.h?ref_type=heads' \
+            -O "$S/usr/include/gbm.h"
+          test -s "$S/usr/include/gbm.h" && echo "gbm.h OK $(wc -c < $S/usr/include/gbm.h) bytes"
+          # libdrm headers (for --drm / --egl-drm)
           git clone --depth 1 https://github.com/libdrm/libdrm.git /tmp/libdrm
-          cp /tmp/libdrm/include/drm/drm.h /tmp/libdrm/include/drm/drm_mode.h \
-             /tmp/libdrm/include/libdrm.h "$S/usr/include/" 2>/dev/null || true
-          mkdir -p "$S/usr/include/libdrm"
+          mkdir -p "$S/usr/include/libdrm" "$S/usr/include/drm"
           cp /tmp/libdrm/include/libdrm/*.h "$S/usr/include/libdrm/" 2>/dev/null || true
-          xf86drm_h=$(find /tmp/libdrm -name xf86drm.h | head -1)
-          cp "$xf86drm_h" "$S/usr/include/" 2>/dev/null || true
-          # runtime libs from firmware
+          find /tmp/libdrm -name 'drm.h' -o -name 'drm_mode.h' -o -name 'xf86drm.h' \
+            2>/dev/null | while read f; do cp "$f" "$S/usr/include/" 2>/dev/null || true; done
+          cp /tmp/libdrm/xf86drm.h /tmp/libdrm/xf86drmMode.h "$S/usr/include/" 2>/dev/null || true
+          # runtime libs from firmware (ARM binaries)
           cp -a "$FW_LIB"/libEGL.so* "$FW_LIB"/libGLESv2.so* \
                 "$FW_LIB"/libgbm.so* "$FW_LIB"/libmali*.so* "$S/usr/lib/" 2>/dev/null || true
+          echo "=== staged headers ==="
+          find "$S/usr/include" -type f | sed 's#.*/##' | sort | head -50
+          echo "=== staged libs ==="
+          ls -la "$S/usr/lib/" | head -40
           echo "SYSROOT=$S" >> $GITHUB_ENV
 
-      - name: Build libdrm (needed libdrm.so for --drm)
+      - name: Build libdrm
         run: |
           export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
           git clone --depth 1 https://github.com/libdrm/libdrm.git /tmp/libdrmb
           cd /tmp/libdrmb
           ./autogen.sh --host=$TOOLCHAIN --prefix=/usr \
             --disable-udev --disable-cairo-tests --disable-manpages \
-            CFLAGS="--sysroot=$SYSROOT -I$SYSROOT/usr/include" \
-            LDFLAGS="--sysroot=$SYSROOT" CC=${TOOLCHAIN}-gcc
+            CFLAGS="--sysroot=$SYSROOT" LDFLAGS="--sysroot=$SYSROOT" CC=${TOOLCHAIN}-gcc
           make -j4 && make install DESTDIR="$SYSROOT"
+          echo "=== libdrm installed .pc ==="
+          find "$SYSROOT" -name 'libdrm*.pc' | head
 
+      - name: Create pkg-config files for GPU libs
+        run: |
+          mkdir -p "$SYSROOT/usr/lib/pkgconfig"
+          cat > "$SYSROOT/usr/lib/pkgconfig/gbm.pc" <<'EOF'
+prefix=/usr
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+Name: gbm
+Description: Generic Buffer Management
+Version: 21.3.0
+Libs: -L${libdir} -lgbm
+Cflags: -I${includedir}
+EOF
+          cat > "$SYSROOT/usr/lib/pkgconfig/egl.pc" <<'EOF'
+prefix=/usr
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+Name: egl
+Description: EGL
+Version: 1.5
+Libs: -L${libdir} -lEGL
+Cflags: -I${includedir}
+EOF
+          cat > "$SYSROOT/usr/lib/pkgconfig/glesv2.pc" <<'EOF'
+prefix=/usr
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+Name: glesv2
+Description: OpenGL ES 2.0
+Version: 2.0
+Libs: -L${libdir} -lGLESv2
+Cflags: -I${includedir}
+EOF
+          echo "created .pc files"
+          ls -la "$SYSROOT/usr/lib/pkgconfig/"
+
+      # ---- Try to reuse toolchain sysroot's libav/ass/lua; fall back to ours ----
       - name: Configure & build mpv (WAF)
         run: |
           export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
-          # waf 用 pkg-config 检查 libdrm / gbm，必须指向交叉编译 sysroot,
-          # 否则会去找 x86 主机的库而误判为缺失 -> 编译直接失败。
-          export PKG_CONFIG_PATH="$SYSROOT/usr/lib/pkgconfig:$SYSROOT/usr/lib/x86_64-linux-gnu/pkgconfig"
-          export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
+          TCSYS=$(${TOOLCHAIN}-gcc -print-sysroot)
+          # Merge our GPU headers/libs into the toolchain sysroot so mpv sees
+          # BOTH its ffmpeg/lua dev libs AND the GPU bits in one sysroot.
+          cp -a "$SYSROOT"/usr/include/. "$TCSYS/usr/include/" 2>/dev/null || true
+          cp -a "$SYSROOT"/usr/lib/. "$TCSYS/usr/lib/" 2>/dev/null || true
+          export PKG_CONFIG_PATH="$TCSYS/usr/lib/pkgconfig:$TCSYS/usr/lib/x86_64-linux-gnu/pkgconfig"
+          export PKG_CONFIG_SYSROOT_DIR="$TCSYS"
           export PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1
           export PKG_CONFIG_ALLOW_SYSTEM_LIBS=1
+          echo "=== final pkgconfig available ==="
+          ls "$TCSYS/usr/lib/pkgconfig/" 2>/dev/null | sort | head -60
           cd mpv-0.34.0
           ./configure \
             --cc=${TOOLCHAIN}-gcc \
@@ -99,13 +183,24 @@ jobs:
             --enable-drm --enable-gbm --enable-egl --enable-egl-drm \
             --enable-plain-gl \
             --disable-cocoa --disable-win32 \
-            --extra-cflags="--sysroot=$SYSROOT -I$SYSROOT/usr/include" \
-            --extra-ldflags="--sysroot=$SYSROOT -L$SYSROOT/usr/lib"
+            --extra-cflags="--sysroot=$TCSYS" \
+            --extra-ldflags="--sysroot=$TCSYS" 2>&1 | tee configure.log
+          echo "=== configure exit: ${PIPESTATUS[0]} ==="
           python3 ./waf build -j4
           cp build/mpv ../mpv-gpu
           file ../mpv-gpu
 
       - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpv-build-logs
+          path: |
+            mpv-0.34.0/configure.log
+          if-no-files-found: ignore
+
+      - name: Upload binary
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: mpv-gpu-aarch64
