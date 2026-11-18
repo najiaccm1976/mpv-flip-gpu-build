@@ -158,15 +158,17 @@ jobs:
           SR=$(${TOOLCHAIN}-gcc -print-sysroot)
           mkdir -p package/lib
           cp mpv-gpu package/
-          # Include GPU/system libs that the device may not have in its lib path.
-          # These come from the toolchain sysroot (built for this exact device).
+          # Include GPU/system libs the stock mpv package lacks. Use cp -L to
+          # dereference symlinks so we ship REAL files (a copied symlink would
+          # become a 0-byte broken file and could clobber the device's libs).
           for lib in libEGL.so.1 libGLESv2.so.2 libgbm.so.1 libdrm.so.2 \
-                     libdrm.so.2.4.0 libjpeg.so.8 libjpeg.so.8.3.0; do
-            find "$SR/usr/lib" -name "$lib" 2>/dev/null | head -1 | while read f; do
-              cp -a "$f" package/lib/ 2>/dev/null || true
-            done
+                     libjpeg.so.8; do
+            f=$(find "$SR/usr/lib" -name "$lib" 2>/dev/null | head -1)
+            if [ -n "$f" ]; then
+              cp -L "$f" "package/lib/$lib" 2>/dev/null || true
+            fi
           done
-          echo "=== package contents ==="
+          echo "=== package contents (verify no 0-byte files) ==="
           ls -la package package/lib
           tar czf mpv-gpu-package.tar.gz -C package .
           ls -la mpv-gpu-package.tar.gz
