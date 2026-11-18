@@ -1,0 +1,112 @@
+name: Build mpv 0.34 (waf) with EGL/DRM GPU for Miyoo Flip 2
+
+# Compiles mpv 0.34.0 with vo_gpu + EGL-DRM context (Mali G52 / libmali),
+# so RetroArch-format GLSL shaders (PhosphorLine) can be loaded.
+# Build system is WAF (mpv 0.34), NOT meson.
+# Runtime libs are reused from the stock firmware rootfs (libEGL/libGLESv2/
+# libgbm/libmali). Missing dev headers (EGL/GLES2/gbm/drm) are supplied here.
+
+on:
+  workflow_dispatch:
+
+env:
+  TOOLCHAIN: aarch64-flip-linux-gnu
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git wget curl tar xz-utils python3 \
+            pkg-config libtool autoconf automake
+          # waf needs python; ubuntu-22.04 has python3
+
+      - name: Download Miyoo Flip cross toolchain (steward-fu, 436MB)
+        run: |
+          wget -q --show-progress \
+            https://github.com/steward-fu/website/releases/download/miyoo-flip/flip-toolchain-v1.0.tar.gz \
+            -O tc.tar.gz
+          tar xf tc.tar.gz
+          echo "TOOLCHAIN_ROOT=$(pwd)/flip" >> $GITHUB_ENV
+
+      - name: Download mpv 0.34 source
+        run: |
+          wget -q https://github.com/mpv-player/mpv/archive/refs/tags/v0.34.0.tar.gz -O mpv.tar.gz
+          tar xf mpv.tar.gz
+
+      - name: Get stock firmware runtime libs (EGL/GLES/gbm/mali)
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/Zetarancio/Miyoo-Flip-Mainline-Linux-Reverse-Engineering.git fw
+          cd fw
+          git sparse-checkout set miyoo355_fw_20250527/unpack/rootfs/usr/lib
+          echo "FW_LIB=$(pwd)/miyoo355_fw_20250527/unpack/rootfs/usr/lib" >> $GITHUB_ENV
+
+      - name: Prepare sysroot (headers + runtime libs + pkgconfig)
+        run: |
+          T=$(pwd); S="$T/sysroot"; mkdir -p "$S/usr/include" "$S/usr/lib/pkgconfig"
+          # Khronos headers
+          git clone --depth 1 https://github.com/KhronosGroup/EGL-Registry.git /tmp/egl
+          cp -r /tmp/egl/api/EGL "$S/usr/include/"
+          cp -r /tmp/egl/api/GLES2 "$S/usr/include/"
+          cp -r /tmp/egl/api/GLES3 "$S/usr/include/"
+          cp /tmp/egl/api/KHR/khrplatform.h "$S/usr/include/"
+          wget -q https://raw.githubusercontent.com/mesa3d/mesa/main/include/GBM/gbm.h -O "$S/usr/include/gbm.h"
+          # libdrm headers (needed by --drm / --egl-drm)
+          git clone --depth 1 https://github.com/libdrm/libdrm.git /tmp/libdrm
+          cp /tmp/libdrm/include/drm/drm.h /tmp/libdrm/include/drm/drm_mode.h \
+             /tmp/libdrm/include/libdrm.h "$S/usr/include/" 2>/dev/null || true
+          mkdir -p "$S/usr/include/libdrm"
+          cp /tmp/libdrm/include/libdrm/*.h "$S/usr/include/libdrm/" 2>/dev/null || true
+          xf86drm_h=$(find /tmp/libdrm -name xf86drm.h | head -1)
+          cp "$xf86drm_h" "$S/usr/include/" 2>/dev/null || true
+          # runtime libs from firmware
+          cp -a "$FW_LIB"/libEGL.so* "$FW_LIB"/libGLESv2.so* \
+                "$FW_LIB"/libgbm.so* "$FW_LIB"/libmali*.so* "$S/usr/lib/" 2>/dev/null || true
+          echo "SYSROOT=$S" >> $GITHUB_ENV
+
+      - name: Build libdrm (needed libdrm.so for --drm)
+        run: |
+          export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
+          git clone --depth 1 https://github.com/libdrm/libdrm.git /tmp/libdrmb
+          cd /tmp/libdrmb
+          ./autogen.sh --host=$TOOLCHAIN --prefix=/usr \
+            --disable-udev --disable-cairo-tests --disable-manpages \
+            CFLAGS="--sysroot=$SYSROOT -I$SYSROOT/usr/include" \
+            LDFLAGS="--sysroot=$SYSROOT" CC=${TOOLCHAIN}-gcc
+          make -j4 && make install DESTDIR="$SYSROOT"
+
+      - name: Configure & build mpv (WAF)
+        run: |
+          export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
+          # waf 用 pkg-config 检查 libdrm / gbm，必须指向交叉编译 sysroot,
+          # 否则会去找 x86 主机的库而误判为缺失 -> 编译直接失败。
+          export PKG_CONFIG_PATH="$SYSROOT/usr/lib/pkgconfig:$SYSROOT/usr/lib/x86_64-linux-gnu/pkgconfig"
+          export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
+          export PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1
+          export PKG_CONFIG_ALLOW_SYSTEM_LIBS=1
+          cd mpv-0.34.0
+          ./configure \
+            --cc=${TOOLCHAIN}-gcc \
+            --cxx=${TOOLCHAIN}-g++ \
+            --host=$TOOLCHAIN \
+            --prefix=/usr \
+            --enable-gpl \
+            --disable-libplacebo --disable-vulkan --disable-x11 \
+            --disable-wayland --disable-sdl2-video \
+            --enable-drm --enable-gbm --enable-egl --enable-egl-drm \
+            --enable-plain-gl \
+            --disable-cocoa --disable-win32 \
+            --extra-cflags="--sysroot=$SYSROOT -I$SYSROOT/usr/include" \
+            --extra-ldflags="--sysroot=$SYSROOT -L$SYSROOT/usr/lib"
+          python3 ./waf build -j4
+          cp build/mpv ../mpv-gpu
+          file ../mpv-gpu
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpv-gpu-aarch64
+          path: mpv-gpu
