@@ -90,7 +90,6 @@ jobs:
           ls "$PC" | grep -iE 'av|ass' | sort
 
       - name: Configure mpv (WAF)
-        continue-on-error: true
         run: |
           export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
           SR=$(${TOOLCHAIN}-gcc -print-sysroot)
@@ -108,10 +107,32 @@ jobs:
             --disable-lua 2>&1 | tee configure.log
           echo "CONFIGURE_EXIT=${PIPESTATUS[0]}"
 
+      - name: Build mpv (WAF)
+        run: |
+          export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
+          SR=$(${TOOLCHAIN}-gcc -print-sysroot)
+          export PKG_CONFIG_PATH="$SR/usr/lib/pkgconfig:$SR/usr/lib/x86_64-linux-gnu/pkgconfig"
+          export PKG_CONFIG_SYSROOT_DIR="$SR"
+          export CC=${TOOLCHAIN}-gcc
+          cd mpv-0.34.0
+          python3 ./waf build -j4 2>&1 | tee build.log
+          echo "BUILD_EXIT=${PIPESTATUS[0]}"
+          ls -la build/mpv && file build/mpv
+          cp build/mpv ../mpv-gpu
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mpv-build-logs
-          path: mpv-0.34.0/configure.log
+          path: |
+            mpv-0.34.0/configure.log
+            mpv-0.34.0/build.log
           if-no-files-found: ignore
+
+      - name: Upload binary
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpv-gpu-aarch64
+          path: mpv-gpu
