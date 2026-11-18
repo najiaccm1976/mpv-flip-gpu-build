@@ -44,11 +44,8 @@ jobs:
           export CXX=${TOOLCHAIN}-g++
           python3 ./waf configure \
             --prefix=/usr \
-            --enable-gpl \
             --disable-libplacebo --disable-vulkan --disable-x11 \
             --disable-wayland --disable-sdl2-video \
-            --enable-drm --enable-gbm --enable-egl --enable-egl-drm \
-            --enable-plain-gl \
             --disable-cocoa --disable-win32 2>&1 | tee configure.log
           echo "CONFIGURE_EXIT=${PIPESTATUS[0]}"
 
