@@ -16,21 +16,80 @@ jobs:
           sudo apt-get install -y git wget tar xz-utils python3 pkg-config
           python3 --version
 
+      - name: Checkout repo (runtime libs)
+        uses: actions/checkout@v4
+
       - name: Download Miyoo Flip cross toolchain
         run: |
           wget -q https://github.com/steward-fu/website/releases/download/miyoo-flip/flip-toolchain-v1.0.tar.gz -O tc.tar.gz
           tar xf tc.tar.gz
           echo "TOOLCHAIN_ROOT=$(pwd)/flip" >> $GITHUB_ENV
+          SR=$(${TOOLCHAIN}-gcc -print-sysroot 2>/dev/null || echo "$(pwd)/flip/aarch64-flip-linux-gnu/sysroot")
+          echo "SYSROOT=$SR" >> $GITHUB_ENV
+          export PATH="$(pwd)/flip/bin:$PATH"
+          SR=$(${TOOLCHAIN}-gcc -print-sysroot)
+          echo "SYSROOT=$SR" >> $GITHUB_ENV
+          echo "sysroot = $SR"
 
-      - name: Download mpv 0.34 source + bootstrap waf
+      - name: Download mpv source + bootstrap waf
         run: |
           wget -q https://github.com/mpv-player/mpv/archive/refs/tags/v0.34.0.tar.gz -O mpv.tar.gz
           tar xf mpv.tar.gz
-          cd mpv-0.34.0
-          python3 ./bootstrap.py
-          ls -la waf
+          cd mpv-0.34.0 && python3 ./bootstrap.py && test -x waf && echo "waf OK"
 
-      - name: Configure mpv (WAF) - dependency check
+      - name: Install runtime libs + headers into sysroot
+        run: |
+          export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
+          SR=$(${TOOLCHAIN}-gcc -print-sysroot)
+          # runtime libs from stock mpv package (AArch64, ffmpeg 4.4 / libass 0.14)
+          tar xzf runtime_libs.tar.gz
+          cp -a lib/*.so* "$SR/usr/lib/" 2>/dev/null || true
+          # create unversioned symlinks so the linker can find -lavcodec etc.
+          cd "$SR/usr/lib"
+          for f in libavcodec.so.58 libavformat.so.58 libavutil.so.56 \
+                   libswscale.so.5 libswresample.so.3 libavfilter.so.7 \
+                   libavdevice.so.58 libass.so.9 libharfbuzz.so.0 \
+                   libluajit-5.1.so.2; do
+            base=$(echo "$f" | sed 's/\.so\..*/.so/')
+            [ -e "$base" ] || ln -s "$f" "$base" 2>/dev/null || true
+          done
+          echo "=== staged libs ==="
+          ls -la "$SR/usr/lib" | grep -iE 'avcodec|avformat|libass|harfbuzz|luajit' | head -30
+
+          # ---- headers from matching source tarballs ----
+          cd "$GITHUB_WORKSPACE"
+          # FFmpeg 4.4.4 headers (libavcodec 58.134.100 matches)
+          wget -q https://ffmpeg.org/releases/ffmpeg-4.4.4.tar.xz -O ffmpeg.tar.xz
+          tar xf ffmpeg.tar.xz
+          for d in libavcodec libavformat libavutil libswscale libswresample libavfilter libavdevice; do
+            mkdir -p "$SR/usr/include/$d"
+            cp ffmpeg-4.4.4/$d/*.h "$SR/usr/include/$d/" 2>/dev/null || true
+          done
+          # libass header
+          wget -q https://github.com/libass/libass/releases/download/0.15.2/libass-0.15.2.tar.gz -O libass.tar.gz
+          tar xf libass.tar.gz
+          cp libass-0.15.2/libass/ass.h libass-0.15.2/libass/ass_utils.h "$SR/usr/include/" 2>/dev/null || true
+
+          # ---- pkg-config files pointing to the staged libs ----
+          PC="$SR/usr/lib/pkgconfig"; mkdir -p "$PC"
+          mpc() {
+            local name=$1 desc=$2 ver=$3 libs=$4 file=$5
+            printf '%s\n' "prefix=/usr" 'exec_prefix=${prefix}' 'libdir=${exec_prefix}/lib' \
+              'includedir=${prefix}/include' "Name: $name" "Description: $desc" \
+              "Version: $ver" "Libs: -L\${libdir} $libs" "Cflags: -I\${includedir}" > "$PC/$file.pc"
+          }
+          mpc libavutil  'libavutil'     '56.51.100' '-lavutil'       libavutil
+          mpc libavcodec 'libavcodec'    '58.134.100' '-lavcodec -lavutil' libavcodec
+          mpc libavformat 'libavformat'  '58.76.100' '-lavformat -lavcodec -lavutil -lswresample' libavformat
+          mpc libswscale 'libswscale'    '5.3.100'  '-lswscale -lavutil' libswscale
+          mpc libswresample 'libswresample' '3.7.100' '-lswresample -lavutil' libswresample
+          mpc libavfilter 'libavfilter'  '7.110.100' '-lavfilter -lavcodec -lavformat -lavutil -lswscale -lswresample' libavfilter
+          mpc libavdevice 'libavdevice'  '58.10.100' '-lavdevice -lavformat -lavcodec -lavutil' libavdevice
+          mpc libass     'libass'        '0.15.2'   '-lass -lharfbuzz -lfribidi' libass
+          echo "=== .pc created ==="
+          ls "$PC" | grep -iE 'av|ass' | sort
+
+      - name: Configure mpv (WAF)
         continue-on-error: true
         run: |
           export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
@@ -39,14 +98,14 @@ jobs:
           export PKG_CONFIG_SYSROOT_DIR="$SR"
           export PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1
           export PKG_CONFIG_ALLOW_SYSTEM_LIBS=1
-          cd mpv-0.34.0
           export CC=${TOOLCHAIN}-gcc
-          export CXX=${TOOLCHAIN}-g++
+          cd mpv-0.34.0
           python3 ./waf configure \
             --prefix=/usr \
             --disable-libplacebo --disable-vulkan --disable-x11 \
             --disable-wayland --disable-sdl2-video \
-            --disable-cocoa --disable-win32 2>&1 | tee configure.log
+            --disable-cocoa --disable-win32 \
+            --disable-lua 2>&1 | tee configure.log
           echo "CONFIGURE_EXIT=${PIPESTATUS[0]}"
 
       - name: Upload logs
