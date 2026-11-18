@@ -65,10 +65,31 @@ jobs:
             mkdir -p "$SR/usr/include/$d"
             cp ffmpeg-4.4.4/$d/*.h "$SR/usr/include/$d/" 2>/dev/null || true
           done
-          # libass header
+          # libass header -> must be in ass/ subdir (#include <ass/ass.h>)
           wget -q https://github.com/libass/libass/releases/download/0.15.2/libass-0.15.2.tar.gz -O libass.tar.gz
           tar xf libass.tar.gz
-          cp libass-0.15.2/libass/ass.h libass-0.15.2/libass/ass_utils.h "$SR/usr/include/" 2>/dev/null || true
+          mkdir -p "$SR/usr/include/ass"
+          cp libass-0.15.2/libass/*.h "$SR/usr/include/ass/" 2>/dev/null || true
+
+          # generated ffmpeg config headers (avconfig.h etc.) are produced by
+          # ffmpeg's configure, not shipped in the source tarball. Generate
+          # them by configuring ffmpeg for aarch64 (no compilation needed).
+          export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
+          cd ffmpeg-4.4.4
+          ./configure \
+            --cross-prefix=${TOOLCHAIN}- \
+            --arch=aarch64 --target-os=linux \
+            --enable-shared --disable-programs --disable-doc \
+            --disable-x86asm --disable-autodetect \
+            --prefix=/usr >/dev/null 2>&1 || true
+          # copy generated config headers back
+          for h in libavutil/avconfig.h libavutil/ffversion.h \
+                   libavcodec/avcodec.h libavfilter/avfilter.h; do
+            [ -f "$h" ] && cp "$h" "$SR/usr/include/$h" 2>/dev/null || true
+          done
+          cd "$GITHUB_WORKSPACE"
+          echo "=== generated headers ==="
+          ls -la "$SR/usr/include/libavutil/avconfig.h" 2>/dev/null || echo "avconfig.h MISSING"
 
           # ---- pkg-config files pointing to the staged libs ----
           PC="$SR/usr/lib/pkgconfig"; mkdir -p "$PC"
