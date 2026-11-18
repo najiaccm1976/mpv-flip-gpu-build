@@ -12,7 +12,9 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    # flip-toolchain 的 gcc 需要 GLIBC_2.36；ubuntu-22.04 只有 2.35 会报错。
+    # ubuntu-24.04 自带 GLIBC 2.39，可满足。
+    runs-on: ubuntu-24.04
     steps:
       - name: Host tools
         run: |
