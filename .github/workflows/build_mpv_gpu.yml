@@ -40,10 +40,9 @@ jobs:
           export PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1
           export PKG_CONFIG_ALLOW_SYSTEM_LIBS=1
           cd mpv-0.34.0
+          export CC=${TOOLCHAIN}-gcc
+          export CXX=${TOOLCHAIN}-g++
           python3 ./waf configure \
-            --cc=${TOOLCHAIN}-gcc \
-            --cxx=${TOOLCHAIN}-g++ \
-            --host=$TOOLCHAIN \
             --prefix=/usr \
             --enable-gpl \
             --disable-libplacebo --disable-vulkan --disable-x11 \
