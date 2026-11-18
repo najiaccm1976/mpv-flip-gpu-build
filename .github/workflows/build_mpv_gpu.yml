@@ -119,42 +119,19 @@ jobs:
 
       - name: Create pkg-config files for GPU libs
         run: |
-          mkdir -p "$SYSROOT/usr/lib/pkgconfig"
-          cat > "$SYSROOT/usr/lib/pkgconfig/gbm.pc" <<'EOF'
-prefix=/usr
-exec_prefix=${prefix}
-libdir=${exec_prefix}/lib
-includedir=${prefix}/include
-Name: gbm
-Description: Generic Buffer Management
-Version: 21.3.0
-Libs: -L${libdir} -lgbm
-Cflags: -I${includedir}
-EOF
-          cat > "$SYSROOT/usr/lib/pkgconfig/egl.pc" <<'EOF'
-prefix=/usr
-exec_prefix=${prefix}
-libdir=${exec_prefix}/lib
-includedir=${prefix}/include
-Name: egl
-Description: EGL
-Version: 1.5
-Libs: -L${libdir} -lEGL
-Cflags: -I${includedir}
-EOF
-          cat > "$SYSROOT/usr/lib/pkgconfig/glesv2.pc" <<'EOF'
-prefix=/usr
-exec_prefix=${prefix}
-libdir=${exec_prefix}/lib
-includedir=${prefix}/include
-Name: glesv2
-Description: OpenGL ES 2.0
-Version: 2.0
-Libs: -L${libdir} -lGLESv2
-Cflags: -I${includedir}
-EOF
+          PC="$SYSROOT/usr/lib/pkgconfig"
+          mkdir -p "$PC"
+          printf '%s\n' 'prefix=/usr' 'exec_prefix=${prefix}' 'libdir=${exec_prefix}/lib' \
+            'includedir=${prefix}/include' 'Name: gbm' 'Description: Generic Buffer Management' \
+            'Version: 21.3.0' 'Libs: -L${libdir} -lgbm' 'Cflags: -I${includedir}' > "$PC/gbm.pc"
+          printf '%s\n' 'prefix=/usr' 'exec_prefix=${prefix}' 'libdir=${exec_prefix}/lib' \
+            'includedir=${prefix}/include' 'Name: egl' 'Description: EGL' \
+            'Version: 1.5' 'Libs: -L${libdir} -lEGL' 'Cflags: -I${includedir}' > "$PC/egl.pc"
+          printf '%s\n' 'prefix=/usr' 'exec_prefix=${prefix}' 'libdir=${exec_prefix}/lib' \
+            'includedir=${prefix}/include' 'Name: glesv2' 'Description: OpenGL ES 2.0' \
+            'Version: 2.0' 'Libs: -L${libdir} -lGLESv2' 'Cflags: -I${includedir}' > "$PC/glesv2.pc"
           echo "created .pc files"
-          ls -la "$SYSROOT/usr/lib/pkgconfig/"
+          ls -la "$PC"
 
       # ---- Try to reuse toolchain sysroot's libav/ass/lua; fall back to ours ----
       - name: Configure & build mpv (WAF)
