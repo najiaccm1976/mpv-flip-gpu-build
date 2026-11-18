@@ -106,7 +106,7 @@ jobs:
           mpc libswresample 'libswresample' '3.7.100' '-lswresample -lavutil' libswresample
           mpc libavfilter 'libavfilter'  '7.110.100' '-lavfilter -lavcodec -lavformat -lavutil -lswscale -lswresample' libavfilter
           mpc libavdevice 'libavdevice'  '58.10.100' '-lavdevice -lavformat -lavcodec -lavutil' libavdevice
-          mpc libass     'libass'        '0.15.2'   '-lass -lharfbuzz -lfribidi' libass
+          mpc libass     'libass'        '0.15.2'   '-lass -lharfbuzz' libass
           echo "=== .pc created ==="
           ls "$PC" | grep -iE 'av|ass' | sort
 
